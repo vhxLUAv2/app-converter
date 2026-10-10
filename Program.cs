@@ -192,24 +192,32 @@ internal sealed class ConverterForm : Form
                             using var response = Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
                             response.EnsureSuccessStatusCode();
                             using var remote = response.Content.ReadAsStream();
-                            using var memory = new MemoryStream();
-                            remote.CopyTo(memory);
-                            memory.Position = 0;
-
-                            if (file.TryGetProperty("hashes", out var hashes) && hashes.ValueKind == JsonValueKind.Object)
-                            {
-                                if (hashes.TryGetProperty("sha1", out var sha1) && sha1.ValueKind == JsonValueKind.String &&
-                                    !string.Equals(Convert.ToHexString(SHA1.HashData(memory.ToArray())), sha1.GetString(), StringComparison.OrdinalIgnoreCase))
-                                    throw new CryptographicException($"SHA-1 verification failed for '{relative}'.");
-                                if (hashes.TryGetProperty("sha512", out var sha512) && sha512.ValueKind == JsonValueKind.String &&
-                                    !string.Equals(Convert.ToHexString(SHA512.HashData(memory.ToArray())), sha512.GetString(), StringComparison.OrdinalIgnoreCase))
-                                    throw new CryptographicException($"SHA-512 verification failed for '{relative}'.");
-                            }
+                            using var sha1Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+                            using var sha512Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA512);
+                            var expectedSha1 = GetExpectedHash(file, "sha1");
+                            var expectedSha512 = GetExpectedHash(file, "sha512");
 
                             AddUniquePath(outputPaths, relative);
                             var target = output.CreateEntry(relative, CompressionLevel.Optimal);
-                            using var targetStream = target.Open();
-                            memory.CopyTo(targetStream);
+                            using (var targetStream = target.Open())
+                            {
+                                var buffer = new byte[81920];
+                                int read;
+                                while ((read = remote.Read(buffer, 0, buffer.Length)) > 0)
+                                {
+                                    sha1Hash.AppendData(buffer, 0, read);
+                                    sha512Hash.AppendData(buffer, 0, read);
+                                    targetStream.Write(buffer, 0, read);
+                                }
+                            }
+
+                            if (expectedSha1 is not null &&
+                                !string.Equals(Convert.ToHexString(sha1Hash.GetHashAndReset()), expectedSha1, StringComparison.OrdinalIgnoreCase))
+                                throw new CryptographicException($"SHA-1 verification failed for '{relative}'.");
+                            if (expectedSha512 is not null &&
+                                !string.Equals(Convert.ToHexString(sha512Hash.GetHashAndReset()), expectedSha512, StringComparison.OrdinalIgnoreCase))
+                                throw new CryptographicException($"SHA-512 verification failed for '{relative}'.");
+
                             downloaded = true;
                             break;
                         }
@@ -231,6 +239,15 @@ internal sealed class ConverterForm : Form
         {
             if (File.Exists(temporary)) File.Delete(temporary);
         }
+    }
+
+    private static string? GetExpectedHash(JsonElement file, string algorithm)
+    {
+        if (!file.TryGetProperty("hashes", out var hashes) || hashes.ValueKind != JsonValueKind.Object)
+            return null;
+        return hashes.TryGetProperty(algorithm, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
     }
 
     private static string? GetOverridePath(string entryName)
