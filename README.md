@@ -43,4 +43,12 @@ The executable is written to the `publish` directory.
 3. The resulting `.zip` is created beside each source file.
 4. If a destination ZIP already exists, that conversion fails without overwriting it.
 
-The project uses built-in .NET libraries only; no third-party packages are required.
+## Auto-updates
+
+The installed app checks the GitHub Releases feed at startup. If a newer version is available, it asks before downloading and installing, then restarts into the update. Update support works for the Velopack-installed app; running a raw portable executable does not self-update.
+
+To publish an update, push a version tag such as `v1.0.1`. GitHub Actions builds the app, packages it with Velopack, and publishes a GitHub Release. The release feed is this repository's GitHub Releases page.
+
+For the first install, download the Velopack setup installer from the latest GitHub Release and install it. Do not use the short-lived Actions artifact as the auto-updating installation.
+
+The project uses the Velopack package for installation and updating; conversion itself uses built-in .NET libraries.
