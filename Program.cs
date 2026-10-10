@@ -263,7 +263,11 @@ internal sealed class ConverterForm : Form
 
     private static string? GetOverridePath(string entryName)
     {
-        foreach (var folder in new[] { "overrides/", "client-overrides/", "server-overrides/" })
+        // Client overrides become instance-root files; keep server overrides isolated.
+        if (entryName.StartsWith("server-overrides/", StringComparison.Ordinal))
+            return NormalizeRelativePath(entryName);
+
+        foreach (var folder in new[] { "overrides/", "client-overrides/" })
         {
             if (entryName.StartsWith(folder, StringComparison.Ordinal))
             {
