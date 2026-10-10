@@ -1,0 +1,34 @@
+
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish Windows executable
+        run: dotnet publish AppConverter.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o publish
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppConverter-windows-x64
+          path: publish/AppConverter.exe
+          if-no-files-found: error
+          retention-days: 14
