@@ -9,6 +9,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Velopack;
 
 namespace AppConverter;
 
@@ -17,6 +18,7 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        VelopackApp.Build().Run();
         ApplicationConfiguration.Initialize();
         Application.Run(new ConverterForm());
     }
@@ -156,6 +158,43 @@ internal sealed class ConverterForm : Form
         DragEnter += FileDragEnter;
         DragDrop += FileDragDrop;
         UpdateStatus();
+        Shown += async (_, _) => await CheckForUpdatesAsync();
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            var manager = new UpdateManager("https://github.com/vhxLUAv2/app-converter");
+            if (!manager.IsInstalled) return;
+
+            var update = await manager.CheckForUpdatesAsync();
+            if (update is null) return;
+
+            var answer = MessageBox.Show(
+                this,
+                $"Version {update.TargetFullRelease.Version} is available. Would you like to download and install it now? The app will restart after installation.",
+                "Update available",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information);
+            if (answer != DialogResult.Yes) return;
+
+            convert.Enabled = false;
+            add.Enabled = false;
+            clear.Enabled = false;
+            activityTitle.Text = "Downloading update";
+            activityDetail.Text = $"Downloading version {update.TargetFullRelease.Version}…";
+            await manager.DownloadUpdatesAsync(update);
+            activityTitle.Text = "Installing update";
+            activityDetail.Text = "Restarting with the new version…";
+            manager.ApplyUpdatesAndRestart(update);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"The update check could not be completed. You can continue using the current version.\r\n\r\n{ex.Message}",
+                "Update check failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void StyleButton(Button button, Color back, Color fore)
