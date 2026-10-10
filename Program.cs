@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -21,56 +22,165 @@ internal static class Program
     }
 }
 
+internal sealed record ConversionProgress(string Phase, string Detail, int CurrentPercent, int OverallPercent);
+
 internal sealed class ConverterForm : Form
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(3) };
-    private readonly ListBox files = new() { Dock = DockStyle.Fill, AllowDrop = true };
-    private readonly Label status = new() { Dock = DockStyle.Bottom, Height = 28, TextAlign = System.Drawing.ContentAlignment.MiddleLeft };
-    private readonly Button convert = new() { Text = "Convert to ZIP", AutoSize = true };
+    private readonly ListBox files = new() { Dock = DockStyle.Fill, AllowDrop = true, IntegralHeight = false, BorderStyle = BorderStyle.None };
+    private readonly Label status = new() { AutoSize = false, Height = 28, Dock = DockStyle.Bottom, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label activityTitle = new() { AutoSize = false, Height = 42, Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 14, FontStyle.Bold) };
+    private readonly Label activityDetail = new() { AutoSize = false, Height = 30, Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label fileName = new() { AutoSize = false, Height = 26, Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label byteDetail = new() { AutoSize = false, Height = 24, Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly Label overallDetail = new() { AutoSize = false, Height = 25, Dock = DockStyle.Top, TextAlign = ContentAlignment.MiddleLeft };
+    private readonly ProgressBar fileProgress = new() { Dock = DockStyle.Top, Height = 18, Style = ProgressBarStyle.Continuous };
+    private readonly ProgressBar overallProgress = new() { Dock = DockStyle.Top, Height = 18, Style = ProgressBarStyle.Continuous };
+    private readonly Button convert = new() { Text = "⇄  Convert to ZIP", Dock = DockStyle.Bottom, Height = 48, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 11, FontStyle.Bold) };
+    private readonly Button add = new() { Text = "Browse files…", AutoSize = true, FlatStyle = FlatStyle.Flat };
+    private readonly Button clear = new() { Text = "Clear list", AutoSize = true, FlatStyle = FlatStyle.Flat };
     private readonly HashSet<string> paths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Color background = Color.FromArgb(79, 91, 105);
+    private readonly Color surface = Color.FromArgb(54, 66, 81);
+    private readonly Color card = Color.FromArgb(42, 54, 69);
+    private readonly Color muted = Color.FromArgb(174, 184, 196);
+    private bool isConverting;
 
     public ConverterForm()
     {
-        Text = ".mrpack to .zip Converter";
-        Width = 680;
-        Height = 460;
-        MinimumSize = new System.Drawing.Size(500, 340);
+        Text = "MRPack to ZIP Converter";
+        Width = 1040;
+        Height = 680;
+        MinimumSize = new Size(820, 560);
         StartPosition = FormStartPosition.CenterScreen;
+        BackColor = background;
+        ForeColor = Color.FromArgb(239, 243, 248);
+        Font = new Font("Segoe UI", 9.5f);
+        AllowDrop = true;
 
-        var hint = new Label
+        var header = new Label
         {
-            Text = "Drop Modrinth .mrpack files here. Downloads listed mods and includes overrides.",
+            Text = "MRPack to ZIP Converter",
             Dock = DockStyle.Top,
-            Height = 48,
-            TextAlign = System.Drawing.ContentAlignment.MiddleCenter
+            Height = 62,
+            Padding = new Padding(22, 14, 0, 0),
+            Font = new Font("Segoe UI", 17, FontStyle.Bold),
+            ForeColor = Color.White
         };
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 48, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(8) };
-        var add = new Button { Text = "Add files…", AutoSize = true };
-        var clear = new Button { Text = "Clear list", AutoSize = true };
-        convert.Click += async (_, _) => await ConvertFilesAsync();
-        add.Click += (_, _) => PickFiles();
-        clear.Click += (_, _) => { files.Items.Clear(); paths.Clear(); UpdateStatus(); };
-        buttons.Controls.Add(convert);
-        buttons.Controls.Add(add);
-        buttons.Controls.Add(clear);
-        Controls.Add(files);
-        Controls.Add(buttons);
-        Controls.Add(status);
-        Controls.Add(hint);
 
-        files.DragEnter += (_, e) => e.Effect = e.Data?.GetDataPresent(DataFormats.FileDrop) == true ? DragDropEffects.Copy : DragDropEffects.None;
-        files.DragDrop += (_, e) =>
+        var columns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(18, 0, 18, 14), BackColor = background };
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 51));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 49));
+        columns.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var left = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 12, 0), BackColor = background };
+        var right = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12, 0, 0, 0), BackColor = background };
+
+        var drop = new Label
         {
-            if (e.Data?.GetData(DataFormats.FileDrop) is string[] dropped) AddPaths(dropped);
+            Text = "⇧\r\n\r\nDrag and drop .mrpack files here\r\nor use Browse files…",
+            Dock = DockStyle.Top,
+            Height = 150,
+            TextAlign = ContentAlignment.MiddleCenter,
+            BackColor = surface,
+            ForeColor = muted,
+            BorderStyle = BorderStyle.FixedSingle,
+            AllowDrop = true
         };
+        drop.DragEnter += FileDragEnter;
+        drop.DragDrop += FileDragDrop;
+        files.BackColor = card;
+        files.ForeColor = Color.White;
+        files.Font = new Font("Segoe UI", 10, FontStyle.Bold);
+        files.Margin = new Padding(0, 14, 0, 14);
+
+        var listLabel = new Label { Text = "Selected modpacks", Dock = DockStyle.Top, Height = 34, Padding = new Padding(0, 10, 0, 0), Font = new Font("Segoe UI", 11, FontStyle.Bold) };
+        var buttonRow = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 48, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = background };
+        StyleButton(add, Color.FromArgb(0, 158, 220), Color.White);
+        StyleButton(clear, surface, Color.White);
+        buttonRow.Controls.Add(add);
+        buttonRow.Controls.Add(clear);
+
+        var listPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 0, 8), BackColor = card };
+        listPanel.Controls.Add(files);
+        left.Controls.Add(listPanel);
+        left.Controls.Add(listLabel);
+        left.Controls.Add(drop);
+        left.Controls.Add(buttonRow);
+
+        var activityCard = new Panel { Dock = DockStyle.Fill, BackColor = surface, Padding = new Padding(24) };
+        activityTitle.Text = "Ready to convert";
+        activityTitle.ForeColor = Color.White;
+        activityDetail.Text = "Choose one or more Modrinth modpacks to begin.";
+        activityDetail.ForeColor = muted;
+        fileName.Text = "Waiting for a file";
+        fileName.ForeColor = Color.White;
+        byteDetail.Text = "Downloaded: 0 B";
+        byteDetail.ForeColor = muted;
+        overallDetail.Text = "Overall progress";
+        overallDetail.ForeColor = muted;
+        fileProgress.Margin = new Padding(0, 0, 0, 18);
+        overallProgress.Margin = new Padding(0, 0, 0, 18);
+        var separator = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = surface };
+        activityCard.Controls.Add(overallProgress);
+        activityCard.Controls.Add(overallDetail);
+        activityCard.Controls.Add(separator);
+        activityCard.Controls.Add(byteDetail);
+        activityCard.Controls.Add(fileProgress);
+        activityCard.Controls.Add(fileName);
+        activityCard.Controls.Add(activityDetail);
+        activityCard.Controls.Add(activityTitle);
+        right.Controls.Add(activityCard);
+
+        convert.BackColor = Color.FromArgb(0, 153, 218);
+        convert.ForeColor = Color.White;
+        convert.FlatAppearance.BorderSize = 0;
+        convert.FlatAppearance.MouseOverBackColor = Color.FromArgb(0, 137, 199);
+        convert.Enabled = false;
+        left.Controls.Add(convert);
+        columns.Controls.Add(left, 0, 0);
+        columns.Controls.Add(right, 1, 0);
+        Controls.Add(columns);
+        Controls.Add(header);
+        status.Text = "0 modpacks queued";
+        status.Padding = new Padding(20, 0, 0, 0);
+        status.ForeColor = muted;
+        status.BackColor = background;
+        Controls.Add(status);
+
+        add.Click += (_, _) => PickFiles();
+        clear.Click += (_, _) => { if (!isConverting) { files.Items.Clear(); paths.Clear(); ResetActivity(); UpdateStatus(); } };
+        convert.Click += async (_, _) => await ConvertFilesAsync();
+        files.DragEnter += FileDragEnter;
+        files.DragDrop += FileDragDrop;
+        DragEnter += FileDragEnter;
+        DragDrop += FileDragDrop;
         UpdateStatus();
+    }
+
+    private void StyleButton(Button button, Color back, Color fore)
+    {
+        button.BackColor = back;
+        button.ForeColor = fore;
+        button.FlatAppearance.BorderSize = 0;
+        button.Padding = new Padding(10, 4, 10, 4);
+        button.Margin = new Padding(0, 4, 8, 4);
+    }
+
+    private void FileDragEnter(object? sender, DragEventArgs e) =>
+        e.Effect = !isConverting && e.Data?.GetDataPresent(DataFormats.FileDrop) == true ? DragDropEffects.Copy : DragDropEffects.None;
+
+    private void FileDragDrop(object? sender, DragEventArgs e)
+    {
+        if (!isConverting && e.Data?.GetData(DataFormats.FileDrop) is string[] dropped) AddPaths(dropped);
     }
 
     private void PickFiles()
     {
+        if (isConverting) return;
         using var dialog = new OpenFileDialog
         {
-            Title = "Select .mrpack files",
+            Title = "Select Modrinth modpacks",
             Filter = "Modrinth modpacks (*.mrpack)|*.mrpack",
             Multiselect = true
         };
@@ -91,49 +201,77 @@ internal sealed class ConverterForm : Form
 
     private async Task ConvertFilesAsync()
     {
-        if (files.Items.Count == 0) return;
-
+        if (isConverting || files.Items.Count == 0) return;
+        isConverting = true;
         convert.Enabled = false;
+        add.Enabled = false;
+        clear.Enabled = false;
         var succeeded = 0;
         var failures = new List<string>();
         var queue = files.Items.Cast<object>().Select(x => x.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)).Cast<string>().ToArray();
+        var progress = new Progress<ConversionProgress>(p =>
+        {
+            activityTitle.Text = p.Phase;
+            activityDetail.Text = p.Detail;
+            fileName.Text = p.Detail;
+            fileProgress.Value = Math.Clamp(p.CurrentPercent, 0, 100);
+            overallProgress.Value = Math.Clamp(p.OverallPercent, 0, 100);
+            overallDetail.Text = $"Overall progress  ·  {p.OverallPercent}%";
+            byteDetail.Text = p.Phase;
+        });
 
         try
         {
             for (var i = 0; i < queue.Length; i++)
             {
                 var source = queue[i];
-                status.Text = $"Converting {i + 1} of {queue.Length}: {Path.GetFileName(source)}";
+                var currentIndex = i;
+                activityTitle.Text = $"Converting {i + 1} of {queue.Length}";
+                activityDetail.Text = Path.GetFileName(source);
+                fileName.Text = "Preparing archive…";
+                fileProgress.Value = 0;
                 try
                 {
-                    await Task.Run(() => ConvertOne(source));
+                    await Task.Run(() => ConvertOne(source, p => ((IProgress<ConversionProgress>)progress).Report(
+                        p with { OverallPercent = (int)Math.Round((currentIndex + p.CurrentPercent / 100.0) * 100.0 / queue.Length) })));
                     succeeded++;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or HttpRequestException or TaskCanceledException or CryptographicException or NotSupportedException)
                 {
                     failures.Add($"{Path.GetFileName(source)}: {ex.Message}");
                 }
+                overallProgress.Value = (int)Math.Round((i + 1) * 100.0 / queue.Length);
             }
         }
         finally
         {
-            convert.Enabled = true;
+            isConverting = false;
+            convert.Enabled = files.Items.Count > 0;
+            add.Enabled = true;
+            clear.Enabled = true;
         }
 
+        activityTitle.Text = failures.Count == 0 ? "Conversion complete" : "Conversion finished with errors";
+        activityDetail.Text = $"{succeeded} succeeded · {failures.Count} failed";
+        fileName.Text = failures.Count == 0 ? "All selected modpacks were converted." : "See the error details for files that could not be converted.";
+        fileProgress.Value = 100;
+        overallProgress.Value = 100;
+        overallDetail.Text = "Batch complete";
+        byteDetail.Text = "ZIP files are saved beside their source .mrpack files.";
         status.Text = $"Converted: {succeeded}    Failed: {failures.Count}";
+
         if (failures.Count > 0)
         {
             var details = string.Join(Environment.NewLine + Environment.NewLine, failures.Take(8));
             if (failures.Count > 8) details += Environment.NewLine + $"…and {failures.Count - 8} more.";
-            MessageBox.Show(this, "Some modpacks could not be converted. No partial ZIP was kept for a failed conversion." + Environment.NewLine + Environment.NewLine + details,
+            MessageBox.Show(this, "Some modpacks could not be converted. Failed conversions do not keep a partial ZIP." + Environment.NewLine + Environment.NewLine + details,
                 "Conversion results", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
-    private static void ConvertOne(string source)
+    private static void ConvertOne(string source, Action<ConversionProgress> report)
     {
         if (!File.Exists(source)) throw new IOException("Source file no longer exists.");
-
         var destination = Path.ChangeExtension(source, ".zip");
         if (File.Exists(destination)) throw new IOException("The destination ZIP already exists; it was not overwritten.");
 
@@ -143,18 +281,21 @@ internal sealed class ConverterForm : Form
             using var input = ZipFile.OpenRead(source);
             var indexEntry = input.GetEntry("modrinth.index.json")
                 ?? throw new InvalidDataException("modrinth.index.json was not found at the archive root.");
-
             using var indexStream = indexEntry.Open();
             using var document = JsonDocument.Parse(indexStream);
             var root = document.RootElement;
             if (!root.TryGetProperty("files", out var fileList) || fileList.ValueKind != JsonValueKind.Array)
                 throw new InvalidDataException("The modpack index has no valid files array.");
 
+            var indexedFiles = fileList.EnumerateArray().ToArray();
+            var totalFiles = indexedFiles.Length;
+            var processed = 0;
             var outputPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             using (var outputFile = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             using (var output = new ZipArchive(outputFile, ZipArchiveMode.Create))
             {
-                // Merge common and side-specific overrides into the instance root.
+                report(new ConversionProgress("Preparing archive", "Reading overrides and configuration files", 0, 0));
                 foreach (var entry in input.Entries)
                 {
                     var relative = GetOverridePath(entry.FullName);
@@ -166,85 +307,85 @@ internal sealed class ConverterForm : Form
                     sourceStream.CopyTo(targetStream);
                 }
 
-                foreach (var file in fileList.EnumerateArray())
+                foreach (var file in indexedFiles)
                 {
                     if (!file.TryGetProperty("path", out var pathElement) || pathElement.ValueKind != JsonValueKind.String)
                         throw new InvalidDataException("A file entry is missing its path.");
                     var relative = NormalizeRelativePath(pathElement.GetString()!);
                     if (!file.TryGetProperty("downloads", out var downloads) || downloads.ValueKind != JsonValueKind.Array || downloads.GetArrayLength() == 0)
                         throw new InvalidDataException($"No download URL is provided for '{relative}'.");
-
-                    var urls = downloads.EnumerateArray()
-                        .Where(x => x.ValueKind == JsonValueKind.String)
-                        .Select(x => x.GetString()!)
-                        .ToArray();
-
+                    var urls = downloads.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String).Select(x => x.GetString()!).ToArray();
                     Exception? lastError = null;
                     var downloaded = false;
+
                     foreach (var url in urls)
                     {
+                        string? downloadTemp = null;
                         try
                         {
                             var uri = new Uri(url, UriKind.Absolute);
-                            if (uri.Scheme != Uri.UriSchemeHttps)
-                                throw new InvalidDataException("Only HTTPS download URLs are allowed.");
-
+                            if (uri.Scheme != Uri.UriSchemeHttps) throw new InvalidDataException("Only HTTPS download URLs are allowed.");
                             using var response = Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
                             response.EnsureSuccessStatusCode();
-                            var downloadTemp = Path.Combine(Path.GetTempPath(), "AppConverter-" + Guid.NewGuid().ToString("N") + ".tmp");
-                            try
-                            {
-                                using var remote = response.Content.ReadAsStream();
-                                using var sha1Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
-                                using var sha512Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA512);
-                                var expectedSha1 = GetExpectedHash(file, "sha1");
-                                var expectedSha512 = GetExpectedHash(file, "sha512");
+                            downloadTemp = Path.Combine(Path.GetTempPath(), "AppConverter-" + Guid.NewGuid().ToString("N") + ".tmp");
+                            using var remote = response.Content.ReadAsStream();
+                            using var sha1Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+                            using var sha512Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA512);
+                            var expectedSha1 = GetExpectedHash(file, "sha1");
+                            var expectedSha512 = GetExpectedHash(file, "sha512");
+                            var totalBytes = response.Content.Headers.ContentLength;
+                            long received = 0;
 
-                                using (var tempStream = new FileStream(downloadTemp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                            using (var tempStream = new FileStream(downloadTemp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                            {
+                                var buffer = new byte[81920];
+                                int read;
+                                while ((read = remote.Read(buffer, 0, buffer.Length)) > 0)
                                 {
-                                    var buffer = new byte[81920];
-                                    int read;
-                                    while ((read = remote.Read(buffer, 0, buffer.Length)) > 0)
+                                    sha1Hash.AppendData(buffer, 0, read);
+                                    sha512Hash.AppendData(buffer, 0, read);
+                                    tempStream.Write(buffer, 0, read);
+                                    received += read;
+                                    var percent = totalBytes is > 0 ? (int)Math.Clamp(received * 100.0 / totalBytes.Value, 0, 100) : 0;
+                                    report(new ConversionProgress("Downloading mod files", $"Downloading: {Path.GetFileName(relative)}", percent, 0)
                                     {
-                                        sha1Hash.AppendData(buffer, 0, read);
-                                        sha512Hash.AppendData(buffer, 0, read);
-                                        tempStream.Write(buffer, 0, read);
-                                    }
+                                    });
                                 }
-
-                                if (expectedSha1 is not null &&
-                                    !string.Equals(Convert.ToHexString(sha1Hash.GetHashAndReset()), expectedSha1, StringComparison.OrdinalIgnoreCase))
-                                    throw new CryptographicException($"SHA-1 verification failed for '{relative}'.");
-                                if (expectedSha512 is not null &&
-                                    !string.Equals(Convert.ToHexString(sha512Hash.GetHashAndReset()), expectedSha512, StringComparison.OrdinalIgnoreCase))
-                                    throw new CryptographicException($"SHA-512 verification failed for '{relative}'.");
-
-                                AddUniquePath(outputPaths, relative);
-                                var target = output.CreateEntry(relative, CompressionLevel.Optimal);
-                                using var targetStream = target.Open();
-                                using var tempInput = File.OpenRead(downloadTemp);
-                                tempInput.CopyTo(targetStream);
-                                downloaded = true;
                             }
-                            finally
-                            {
-                                if (File.Exists(downloadTemp)) File.Delete(downloadTemp);
-                            }
+
+                            if (expectedSha1 is not null && !string.Equals(Convert.ToHexString(sha1Hash.GetHashAndReset()), expectedSha1, StringComparison.OrdinalIgnoreCase))
+                                throw new CryptographicException($"SHA-1 verification failed for '{relative}'.");
+                            if (expectedSha512 is not null && !string.Equals(Convert.ToHexString(sha512Hash.GetHashAndReset()), expectedSha512, StringComparison.OrdinalIgnoreCase))
+                                throw new CryptographicException($"SHA-512 verification failed for '{relative}'.");
+
+                            AddUniquePath(outputPaths, relative);
+                            var target = output.CreateEntry(relative, CompressionLevel.Optimal);
+                            using var targetStream = target.Open();
+                            using var tempInput = File.OpenRead(downloadTemp);
+                            tempInput.CopyTo(targetStream);
+                            downloaded = true;
+                            report(new ConversionProgress("Verifying and packaging", $"Added {Path.GetFileName(relative)} ({processed + 1}/{totalFiles} files)", 100, 0));
                             break;
                         }
                         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException or InvalidDataException)
                         {
                             lastError = ex;
                         }
+                        finally
+                        {
+                            if (downloadTemp is not null && File.Exists(downloadTemp)) File.Delete(downloadTemp);
+                        }
                     }
 
-                    if (!downloaded)
-                        throw new IOException($"Could not download '{relative}'. {lastError?.Message ?? "No usable download URL."}", lastError);
+                    if (!downloaded) throw new IOException($"Could not download '{relative}'. {lastError?.Message ?? "No usable download URL."}", lastError);
+                    processed++;
+                    report(new ConversionProgress("Downloading mod files", $"Processed {processed} of {totalFiles} indexed files", 100, 0));
                 }
             }
 
-            // Move only after the ZIP archive has been fully written and closed.
+            report(new ConversionProgress("Finalizing ZIP", "Checking output and saving ZIP archive", 100, 100));
             File.Move(temporary, destination);
+            report(new ConversionProgress("Conversion complete", $"Saved {Path.GetFileName(destination)}", 100, 100));
         }
         finally
         {
@@ -252,21 +393,26 @@ internal sealed class ConverterForm : Form
         }
     }
 
+    private void ResetActivity()
+    {
+        activityTitle.Text = "Ready to convert";
+        activityDetail.Text = "Choose one or more Modrinth modpacks to begin.";
+        fileName.Text = "Waiting for a file";
+        byteDetail.Text = "Downloaded: 0 B";
+        overallDetail.Text = "Overall progress";
+        fileProgress.Value = 0;
+        overallProgress.Value = 0;
+    }
+
     private static string? GetExpectedHash(JsonElement file, string algorithm)
     {
-        if (!file.TryGetProperty("hashes", out var hashes) || hashes.ValueKind != JsonValueKind.Object)
-            return null;
-        return hashes.TryGetProperty(algorithm, out var value) && value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
+        if (!file.TryGetProperty("hashes", out var hashes) || hashes.ValueKind != JsonValueKind.Object) return null;
+        return hashes.TryGetProperty(algorithm, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     }
 
     private static string? GetOverridePath(string entryName)
     {
-        // Client overrides become instance-root files; keep server overrides isolated.
-        if (entryName.StartsWith("server-overrides/", StringComparison.Ordinal))
-            return NormalizeRelativePath(entryName);
-
+        if (entryName.StartsWith("server-overrides/", StringComparison.Ordinal)) return NormalizeRelativePath(entryName);
         foreach (var folder in new[] { "overrides/", "client-overrides/" })
         {
             if (entryName.StartsWith(folder, StringComparison.Ordinal))
@@ -284,7 +430,6 @@ internal sealed class ConverterForm : Form
         if (string.IsNullOrWhiteSpace(normalized) || normalized.StartsWith("/", StringComparison.Ordinal) ||
             Path.IsPathRooted(normalized) || normalized.Contains(':'))
             throw new InvalidDataException($"Unsafe archive path: '{path}'.");
-
         var segments = normalized.Split('/');
         if (segments.Any(x => x.Length == 0 || x == "." || x == ".."))
             throw new InvalidDataException($"Unsafe archive path: '{path}'.");
@@ -293,9 +438,12 @@ internal sealed class ConverterForm : Form
 
     private static void AddUniquePath(HashSet<string> paths, string path)
     {
-        if (!paths.Add(path))
-            throw new InvalidDataException($"Multiple files target the same path: '{path}'.");
+        if (!paths.Add(path)) throw new InvalidDataException($"Multiple files target the same path: '{path}'.");
     }
 
-    private void UpdateStatus() => status.Text = $"{files.Items.Count} .mrpack file(s) queued";
+    private void UpdateStatus()
+    {
+        status.Text = $"{files.Items.Count} modpack(s) queued";
+        convert.Enabled = files.Items.Count > 0 && !isConverting;
+    }
 }
