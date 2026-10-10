@@ -347,9 +347,12 @@ internal sealed class ConverterForm : Form
                                     tempStream.Write(buffer, 0, read);
                                     received += read;
                                     var percent = totalBytes is > 0 ? (int)Math.Clamp(received * 100.0 / totalBytes.Value, 0, 100) : 0;
-                                    report(new ConversionProgress("Downloading mod files", $"Downloading: {Path.GetFileName(relative)}", percent, 0)
-                                    {
-                                    });
+                                    report(new ConversionProgress(
+                                        "Downloading mod files",
+                                        $"Downloading: {Path.GetFileName(relative)}",
+                                        percent,
+                                        totalFiles == 0 ? 0 : (int)Math.Round((processed + percent / 100.0) * 100.0 / totalFiles),
+                                        $"{FormatBytes(received)} / {(totalBytes.HasValue ? FormatBytes(totalBytes.Value) : "unknown size")}"));
                                 }
                             }
 
