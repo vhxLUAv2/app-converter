@@ -3,10 +3,11 @@ name: Build Windows EXE
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -23,13 +24,34 @@ jobs:
       - name: Build
         run: dotnet build AppConverter.csproj -c Release
 
-      - name: Publish standalone Windows executable
+      - name: Publish standalone Windows app
         run: dotnet publish AppConverter.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true -o publish
 
-      - name: Upload executable
+      - name: Upload portable executable
+        if: startsWith(github.ref, 'refs/heads/')
         uses: actions/upload-artifact@v4
         with:
           name: AppConverter-windows-x64
           path: publish/AppConverter.exe
           if-no-files-found: error
           retention-days: 14
+
+      - name: Install Velopack CLI
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: dotnet tool install --global vpk
+
+      - name: Package Velopack release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          vpk pack --packId AppConverter --packVersion $version --packDir publish --mainExe AppConverter.exe --outputDir releases
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          vpk upload github --repoUrl https://github.com/vhxLUAv2/app-converter --publish --releaseName "AppConverter $version" --tag $env:GITHUB_REF_NAME --token $env:GITHUB_TOKEN --outputDir releases
