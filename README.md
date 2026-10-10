@@ -7,7 +7,7 @@ A minimal Windows desktop utility that converts Modrinth `.mrpack` files into ZI
 - Reads `modrinth.index.json` from the archive root.
 - Downloads every indexed file from the HTTPS download URLs declared in the index.
 - Verifies SHA-1 and/or SHA-512 hashes when the index supplies them.
-- Includes files from `overrides/`, `client-overrides/`, and `server-overrides/` at the ZIP root.
+- Merges `overrides/` and `client-overrides/` into the instance root, while preserving `server-overrides/` separately.
 - Supports drag-and-drop and batch conversion.
 - Never overwrites an existing destination ZIP.
 - Writes downloads to temporary files, and removes incomplete output if a conversion fails.
