@@ -191,37 +191,48 @@ internal sealed class ConverterForm : Form
 
                             using var response = Http.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
                             response.EnsureSuccessStatusCode();
-                            using var remote = response.Content.ReadAsStream();
-                            using var sha1Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
-                            using var sha512Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA512);
-                            var expectedSha1 = GetExpectedHash(file, "sha1");
-                            var expectedSha512 = GetExpectedHash(file, "sha512");
-
-                            AddUniquePath(outputPaths, relative);
-                            var target = output.CreateEntry(relative, CompressionLevel.Optimal);
-                            using (var targetStream = target.Open())
+                            var downloadTemp = Path.Combine(Path.GetTempPath(), "AppConverter-" + Guid.NewGuid().ToString("N") + ".tmp");
+                            try
                             {
-                                var buffer = new byte[81920];
-                                int read;
-                                while ((read = remote.Read(buffer, 0, buffer.Length)) > 0)
+                                using var remote = response.Content.ReadAsStream();
+                                using var sha1Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+                                using var sha512Hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA512);
+                                var expectedSha1 = GetExpectedHash(file, "sha1");
+                                var expectedSha512 = GetExpectedHash(file, "sha512");
+
+                                using (var tempStream = new FileStream(downloadTemp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                                 {
-                                    sha1Hash.AppendData(buffer, 0, read);
-                                    sha512Hash.AppendData(buffer, 0, read);
-                                    targetStream.Write(buffer, 0, read);
+                                    var buffer = new byte[81920];
+                                    int read;
+                                    while ((read = remote.Read(buffer, 0, buffer.Length)) > 0)
+                                    {
+                                        sha1Hash.AppendData(buffer, 0, read);
+                                        sha512Hash.AppendData(buffer, 0, read);
+                                        tempStream.Write(buffer, 0, read);
+                                    }
                                 }
+
+                                if (expectedSha1 is not null &&
+                                    !string.Equals(Convert.ToHexString(sha1Hash.GetHashAndReset()), expectedSha1, StringComparison.OrdinalIgnoreCase))
+                                    throw new CryptographicException($"SHA-1 verification failed for '{relative}'.");
+                                if (expectedSha512 is not null &&
+                                    !string.Equals(Convert.ToHexString(sha512Hash.GetHashAndReset()), expectedSha512, StringComparison.OrdinalIgnoreCase))
+                                    throw new CryptographicException($"SHA-512 verification failed for '{relative}'.");
+
+                                AddUniquePath(outputPaths, relative);
+                                var target = output.CreateEntry(relative, CompressionLevel.Optimal);
+                                using var targetStream = target.Open();
+                                using var tempInput = File.OpenRead(downloadTemp);
+                                tempInput.CopyTo(targetStream);
+                                downloaded = true;
                             }
-
-                            if (expectedSha1 is not null &&
-                                !string.Equals(Convert.ToHexString(sha1Hash.GetHashAndReset()), expectedSha1, StringComparison.OrdinalIgnoreCase))
-                                throw new CryptographicException($"SHA-1 verification failed for '{relative}'.");
-                            if (expectedSha512 is not null &&
-                                !string.Equals(Convert.ToHexString(sha512Hash.GetHashAndReset()), expectedSha512, StringComparison.OrdinalIgnoreCase))
-                                throw new CryptographicException($"SHA-512 verification failed for '{relative}'.");
-
-                            downloaded = true;
+                            finally
+                            {
+                                if (File.Exists(downloadTemp)) File.Delete(downloadTemp);
+                            }
                             break;
                         }
-                        catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException or UriFormatException or CryptographicException or InvalidDataException)
+                        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException or InvalidDataException)
                         {
                             lastError = ex;
                         }
