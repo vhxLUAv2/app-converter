@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Velopack;
+using Velopack.Sources;
 
 namespace AppConverter;
 
@@ -165,7 +166,8 @@ internal sealed class ConverterForm : Form
     {
         try
         {
-            var manager = new UpdateManager("https://github.com/vhxLUAv2/app-converter");
+            var source = new GithubSource("https://github.com/vhxLUAv2/app-converter", null, false);
+            var manager = new UpdateManager(source);
             if (!manager.IsInstalled) return;
 
             var update = await manager.CheckForUpdatesAsync();
