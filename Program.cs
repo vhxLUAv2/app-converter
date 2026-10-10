@@ -22,7 +22,7 @@ internal static class Program
     }
 }
 
-internal sealed record ConversionProgress(string Phase, string Detail, int CurrentPercent, int OverallPercent);
+internal sealed record ConversionProgress(string Phase, string Detail, int CurrentPercent, int OverallPercent, string ByteDetail);
 
 internal sealed class ConverterForm : Form
 {
@@ -115,7 +115,7 @@ internal sealed class ConverterForm : Form
         activityDetail.ForeColor = muted;
         fileName.Text = "Waiting for a file";
         fileName.ForeColor = Color.White;
-        byteDetail.Text = "Downloaded: 0 B";
+        byteDetail.Text = "Download size will appear here";
         byteDetail.ForeColor = muted;
         overallDetail.Text = "Overall progress";
         overallDetail.ForeColor = muted;
@@ -217,7 +217,7 @@ internal sealed class ConverterForm : Form
             fileProgress.Value = Math.Clamp(p.CurrentPercent, 0, 100);
             overallProgress.Value = Math.Clamp(p.OverallPercent, 0, 100);
             overallDetail.Text = $"Overall progress  ·  {p.OverallPercent}%";
-            byteDetail.Text = p.Phase;
+            byteDetail.Text = p.ByteDetail;
         });
 
         try
@@ -233,7 +233,7 @@ internal sealed class ConverterForm : Form
                 try
                 {
                     await Task.Run(() => ConvertOne(source, p => ((IProgress<ConversionProgress>)progress).Report(
-                        p with { OverallPercent = (int)Math.Round((currentIndex + p.CurrentPercent / 100.0) * 100.0 / queue.Length) })));
+                        p with { OverallPercent = (int)Math.Round((currentIndex + p.OverallPercent / 100.0) * 100.0 / queue.Length) })));
                     succeeded++;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or HttpRequestException or TaskCanceledException or CryptographicException or NotSupportedException)
@@ -295,7 +295,7 @@ internal sealed class ConverterForm : Form
             using (var outputFile = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             using (var output = new ZipArchive(outputFile, ZipArchiveMode.Create))
             {
-                report(new ConversionProgress("Preparing archive", "Reading overrides and configuration files", 0, 0));
+                report(new ConversionProgress("Preparing archive", "Reading overrides and configuration files", 0, 0, "Preparing files…"));
                 foreach (var entry in input.Entries)
                 {
                     var relative = GetOverridePath(entry.FullName);
@@ -364,7 +364,7 @@ internal sealed class ConverterForm : Form
                             using var tempInput = File.OpenRead(downloadTemp);
                             tempInput.CopyTo(targetStream);
                             downloaded = true;
-                            report(new ConversionProgress("Verifying and packaging", $"Added {Path.GetFileName(relative)} ({processed + 1}/{totalFiles} files)", 100, 0));
+                            report(new ConversionProgress("Verifying and packaging", $"Added {Path.GetFileName(relative)} ({processed + 1}/{totalFiles} files)", 100, totalFiles == 0 ? 100 : (int)Math.Round((processed + 1) * 100.0 / totalFiles), "Hash verified; adding file to ZIP"));
                             break;
                         }
                         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException or InvalidDataException)
@@ -379,18 +379,27 @@ internal sealed class ConverterForm : Form
 
                     if (!downloaded) throw new IOException($"Could not download '{relative}'. {lastError?.Message ?? "No usable download URL."}", lastError);
                     processed++;
-                    report(new ConversionProgress("Downloading mod files", $"Processed {processed} of {totalFiles} indexed files", 100, 0));
+                    report(new ConversionProgress("Downloading mod files", $"Processed {processed} of {totalFiles} indexed files", 100, totalFiles == 0 ? 100 : (int)Math.Round(processed * 100.0 / totalFiles), $"Processed {processed} of {totalFiles} indexed files"));
                 }
             }
 
-            report(new ConversionProgress("Finalizing ZIP", "Checking output and saving ZIP archive", 100, 100));
+            report(new ConversionProgress("Finalizing ZIP", "Checking output and saving ZIP archive", 100, 100, "Writing final ZIP archive…"));
             File.Move(temporary, destination);
-            report(new ConversionProgress("Conversion complete", $"Saved {Path.GetFileName(destination)}", 100, 100));
+            report(new ConversionProgress("Conversion complete", $"Saved {Path.GetFileName(destination)}", 100, 100, "ZIP saved successfully"));
         }
         finally
         {
             if (File.Exists(temporary)) File.Delete(temporary);
         }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB" };
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1) { value /= 1024; unit++; }
+        return $"{value:0.##} {units[unit]}";
     }
 
     private void ResetActivity()
